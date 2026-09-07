@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "primorets"
+version = "0.1.0"
+description = "Offline satellite orbit catalog and pointing planner"
+requires-python = ">=3.9"
+dependencies = ["skyfield==1.54"]
+
+[project.gui-scripts]
+primorets = "primorets.gui:main"
+
+[tool.setuptools.packages.find]
+include = ["primorets*"]
+
