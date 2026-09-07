@@ -2,17 +2,19 @@ import json
 import math
 import time
 import tkinter as tk
+from dataclasses import asdict
 from tkinter import ttk, filedialog, messagebox
 
 from .session import Session
+from .radio import RadioSettings
 
 
 class SessionWindow(tk.Toplevel):
     def __init__(self, parent, points, metadata):
         super().__init__(parent)
         self.title("Приморец • Имитация сеанса связи")
-        self.geometry("1150x830")
-        self.minsize(1000, 760)
+        self.geometry("1200x940")
+        self.minsize(1100, 880)
         self.metadata = dict(metadata)
         self.model = Session(points, metadata["horizon_mask_deg"])
         self.last_event = 0
@@ -35,6 +37,19 @@ class SessionWindow(tk.Toplevel):
         ttk.Label(body, textvariable=self.state, font=("Arial", 13, "bold")).pack(anchor="w", pady=5)
         self.progress = ttk.Progressbar(body, maximum=self.model.duration)
         self.progress.pack(fill="x")
+        radio_box = ttk.LabelFrame(body, text="Радиолиния по Фриису — начальные значения учебные, параметры задаёт оператор", padding=6)
+        radio_box.pack(fill="x", pady=6)
+        self.radio_fields = {}
+        for column, (key, label) in enumerate([
+            ("frequency_ghz", "Частота, ГГц"), ("tx_power_w", "P передатчика, Вт"),
+            ("tx_gain_dbi", "G передающей, dBi"), ("rx_gain_dbi", "G приёмной, dBi"),
+            ("losses_db", "Доп. потери, дБ"), ("threshold_dbm", "Порог приёма, dBm")]):
+            self.radio_fields[key] = tk.StringVar(value=str(getattr(self.model.radio, key)))
+            ttk.Label(radio_box, text=label).grid(row=0, column=column, sticky="w", padx=3)
+            ttk.Entry(radio_box, textvariable=self.radio_fields[key], width=15).grid(row=1, column=column, sticky="w", padx=3)
+        ttk.Button(radio_box, text="Применить", command=self.apply_radio).grid(row=1, column=6, padx=5)
+        self.radio_text = tk.StringVar()
+        ttk.Label(radio_box, textvariable=self.radio_text, wraplength=1120).grid(row=2, column=0, columnspan=7, sticky="w", pady=5)
         faults = ttk.Frame(body)
         faults.pack(fill="x", pady=8)
         self.auto = tk.BooleanVar(value=True)
@@ -48,7 +63,7 @@ class SessionWindow(tk.Toplevel):
         self.canvas.bind("<Configure>", lambda event: self.draw())
         self.telemetry = tk.StringVar()
         ttk.Label(body, textvariable=self.telemetry, font=("Arial", 11), wraplength=1090).pack(fill="x", pady=8)
-        ttk.Label(body, text="Цепочка: интерполяция орбиты → TX команды → ACK → движение → сравнение углов → учебные пакеты").pack(anchor="w")
+        ttk.Label(body, text="Цепочка: орбита → TX / ACK → движение → проверка углов и мощности приёма → учебные пакеты").pack(anchor="w")
         frame = ttk.LabelFrame(body, text="Журнал виртуального обмена — последние 2000 событий", padding=5)
         frame.pack(fill="both", expand=True, pady=8)
         self.log = tk.Text(frame, height=8, bg="#182b3e", fg="#d5e4f3", font=("Consolas", 10), wrap="word", state="disabled")
@@ -61,6 +76,16 @@ class SessionWindow(tk.Toplevel):
         self.protocol("WM_DELETE_WINDOW", self.close)
         self.render()
         self.timer = self.after(100, self.tick)
+
+    def apply_radio(self):
+        try:
+            settings = RadioSettings(**{key: float(var.get().strip().replace(",", "."))
+                                        for key, var in self.radio_fields.items()})
+        except ValueError as exc:
+            messagebox.showerror("Проверьте параметры радиолинии", str(exc), parent=self)
+            return
+        self.model.set_radio(settings)
+        self.render()
 
     def start(self):
         self.last_wall = time.monotonic()
@@ -118,6 +143,15 @@ class SessionWindow(tk.Toplevel):
     def render(self):
         m = self.model
         az, el = m.target()
+        r = m.radio_metrics
+        visibility_note = "Цель ниже маски: радиосвязь недоступна." if el < m.mask else ""
+        self.radio_text.set(f"Применено: {m.radio.frequency_ghz:g} ГГц; {m.radio.tx_power_w:g} Вт; "
+                            f"Gtx/Grx {m.radio.tx_gain_dbi:g}/{m.radio.rx_gain_dbi:g} dBi; "
+                            f"Lдоп {m.radio.losses_db:g} дБ; порог {m.radio.threshold_dbm:g} dBm.\n"
+                            f"R={r['range_km']:,.1f} км   k(R)={r['free_space_power_factor']:.3e}   "
+                            f"FSPL={r['fspl_db']:.2f} дБ   Pr={r['received_dbm']:.2f} dBm "
+                            f"({r['received_w']:.3e} Вт)   Запас={r['margin_db']:+.2f} дБ. {visibility_note}\n"
+                            "Pr — оценка при заданных усилениях и идеальном наведении; ошибка наведения проверяется отдельно.")
         self.state.set(f"{m.state}  |  Модель UTC: {m.utc[:19].replace('T', ' ')}")
         self.progress["value"] = m.elapsed
         self.telemetry.set(f"Цель: AZ {az:.2f}° / EL {el:.2f}°     Антенна: AZ {m.az:.2f}° / EL {m.el:.2f}°     "
@@ -176,6 +210,9 @@ class SessionWindow(tk.Toplevel):
                   "simulation_utc": m.utc, "elapsed_seconds": m.elapsed, "azimuth_deg": m.az,
                   "elevation_deg": m.el, "error_deg": m.error, "commands_sent": m.commands_sent,
                   "commands_acked": m.commands_acked, "simulated_packets": m.packets,
+                  "radio_settings": asdict(m.radio), "radio_metrics": m.radio_metrics,
+                  "radio_model": "Friis, one-way free space, fixed gains; pointing checked separately",
+                  "above_horizon_mask": m.target()[1] >= m.mask,
                   "events_total": m.event_count, "events_omitted": m.event_count-len(m.events), "events": list(m.events)}
         try:
             with open(path, "w", encoding="utf-8") as stream:
