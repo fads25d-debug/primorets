@@ -5,6 +5,7 @@ from datetime import timedelta
 import math
 
 from .core import parse_utc
+from .radio import RadioSettings
 
 
 def angle_delta(target, actual):
@@ -12,10 +13,13 @@ def angle_delta(target, actual):
 
 
 class Session:
-    def __init__(self, points, mask):
+    def __init__(self, points, mask, radio=None):
         if len(points) < 2:
             raise ValueError("Для сеанса нужны минимум две точки траектории")
         self.points = [dict(p) for p in points]
+        self.radio = radio if radio is not None else RadioSettings()
+        for point in self.points:
+            self.radio.at_range(point.get("range_km", float("nan")))
         self.start = parse_utc(points[0]["utc"])
         self.times = [(parse_utc(p["utc"]) - self.start).total_seconds() for p in points]
         if self.times[0] != 0 or any(b <= a for a, b in zip(self.times, self.times[1:])):
@@ -51,6 +55,27 @@ class Session:
         self.events.clear()
         self.event_count = 0
         self.log("ИМИТАЦИЯ: виртуальный контроллер готов; антенна AZ=0°, EL=0°")
+        self.log_radio_settings()
+
+    def log_radio_settings(self):
+        r = self.radio
+        self.log(f"ФРИИС: f={r.frequency_ghz:g} ГГц, Ptx={r.tx_power_w:g} Вт, "
+                 f"Gtx={r.tx_gain_dbi:g} dBi, Grx={r.rx_gain_dbi:g} dBi, "
+                 f"Lдоп={r.losses_db:g} дБ, порог={r.threshold_dbm:g} dBm")
+
+    def set_radio(self, settings):
+        self.radio = settings
+        self.link = False
+        self.lock_time = 0
+        self.log_radio_settings()
+        self.log("Параметры применены: захват сброшен для повторной проверки канала")
+
+    @property
+    def radio_metrics(self):
+        i = min(max(0, bisect_right(self.times, self.elapsed) - 1), len(self.times) - 2)
+        fraction = (self.elapsed - self.times[i]) / (self.times[i + 1] - self.times[i])
+        distance = self.points[i]["range_km"] + fraction * (self.points[i + 1]["range_km"] - self.points[i]["range_km"])
+        return self.radio.at_range(distance)
 
     def target(self):
         i = min(max(0, bisect_right(self.times, self.elapsed) - 1), len(self.times) - 2)
@@ -80,6 +105,8 @@ class Session:
             return "НЕТ ОТВЕТА КОНТРОЛЛЕРА"
         if self.target()[1] < self.mask:
             return "ОЖИДАНИЕ ВИДИМОСТИ"
+        if self.radio_metrics["margin_db"] < 0:
+            return "МОЩНОСТЬ ПРИЁМА НИЖЕ ПОРОГА"
         if self.link:
             return "УЧЕБНАЯ СВЯЗЬ УСТАНОВЛЕНА"
         return "НАВЕДЕНИЕ / ЗАХВАТ"
@@ -159,12 +186,15 @@ class Session:
                 ca, ce = self.command
                 self.az = (self.az + max(-6 * dt, min(6 * dt, angle_delta(ca, self.az)))) % 360
                 self.el += max(-3 * dt, min(3 * dt, ce - self.el))
-            locked = visible and not self.fault and self.error <= 0.5
+            radio = self.radio_metrics
+            locked = visible and not self.fault and self.error <= 0.5 and radio["margin_db"] >= 0
             self.lock_time = self.lock_time + dt if locked else 0
             old_link = self.link
             self.link = self.lock_time >= 2
             if old_link != self.link:
-                self.log("ЗАХВАТ: учебный канал открыт, 10 условных пакетов/с" if self.link else "ПОТЕРЯ ЗАХВАТА: учебная передача приостановлена")
+                self.log(("ЗАХВАТ: учебный канал открыт, 10 условных пакетов/с" if self.link else
+                          "ПОТЕРЯ ЗАХВАТА: учебная передача приостановлена") +
+                         f"; R={radio['range_km']:.1f} км, Pr={radio['received_dbm']:.2f} dBm, запас={radio['margin_db']:+.2f} дБ")
             if self.link:
                 self.packet_fraction += dt * 10
                 packets = int(self.packet_fraction)
@@ -176,6 +206,5 @@ class Session:
                 self.link = False
                 self.command = self.pending = None
                 self.log("Конец расчётного интервала: сеанс завершён")
-
 
 
