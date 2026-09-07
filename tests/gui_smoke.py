@@ -39,6 +39,16 @@ window.render()
 assert window.model.commands_sent > 0
 assert window.model.link
 assert len(window.canvas.find_all()) > 10
+assert "FSPL=" in window.radio_text.get()
+window.radio_fields["threshold_dbm"].set("0")
+window.apply_radio()
+assert not window.model.link
+window.model.advance(5)
+assert window.model.state == "МОЩНОСТЬ ПРИЁМА НИЖЕ ПОРОГА"
+window.radio_fields["threshold_dbm"].set("-110")
+window.apply_radio()
+window.model.advance(5)
+assert window.model.link
 window.disturb()
 assert not window.model.link
 window.model.advance(10)
