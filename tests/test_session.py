@@ -4,8 +4,8 @@ from primorets.session import Session, angle_delta
 
 
 def fixed_track(az=30, el=35, duration=180):
-    return [{"utc": "2026-09-07T00:00:00+00:00", "azimuth_deg": az, "elevation_deg": el},
-            {"utc": f"2026-09-07T00:{duration // 60:02d}:{duration % 60:02d}+00:00", "azimuth_deg": az, "elevation_deg": el}]
+    return [{"utc": "2026-09-07T00:00:00+00:00", "azimuth_deg": az, "elevation_deg": el, "range_km": 40000},
+            {"utc": f"2026-09-07T00:{duration // 60:02d}:{duration % 60:02d}+00:00", "azimuth_deg": az, "elevation_deg": el, "range_km": 40000}]
 
 
 class SessionTests(unittest.TestCase):
